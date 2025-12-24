@@ -1,7 +1,6 @@
 {
   "name": "mc-whitelist-bot",
   "version": "1.0.0",
-  "description": "Discord bot for Minecraft whitelist management",
   "type": "module",
   "scripts": {
     "start": "node index.js"
