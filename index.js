@@ -1,4 +1,4 @@
-// ===== Fake Port für Render =====
+// ===== Fake Port (Render) =====
 import express from "express";
 import { Client, GatewayIntentBits, REST, Routes } from "discord.js";
 import sqlite3 from "sqlite3";
@@ -27,9 +27,29 @@ const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers]
 });
 
-// ===== Helper: Rollenprüfung =====
-function hasWhitelistMasterRole(member) {
+// ===== Rollencheck =====
+function isWhitelistMaster(member) {
   return member.roles.cache.some(r => r.name === "Whitelist Master");
+}
+
+// ===== Backup posten =====
+async function postBackup() {
+  const channel = client.channels.cache.find(c => c.name === "whitelist_admin");
+  if (!channel) return;
+
+  const rows = await db.all("SELECT * FROM whitelist");
+  if (rows.length === 0) {
+    await channel.send("📭 Whitelist ist leer.");
+    return;
+  }
+
+  const text = rows
+    .map(r => `${r.discord_id}|${r.minecraft_name}`)
+    .join("\n");
+
+  await channel.send(
+    "📦 **Whitelist Backup**:\n```text\n" + text + "\n```"
+  );
 }
 
 // ===== Ready =====
@@ -39,11 +59,11 @@ client.once("ready", async () => {
   const commands = [
     {
       name: "whitelist",
-      description: "Trage dich selbst zur Minecraft-Whitelist ein",
+      description: "Trage dich selbst zur Whitelist ein",
       options: [
         {
           name: "name",
-          description: "Dein Minecraft-Username",
+          description: "Minecraft-Name",
           type: 3,
           required: true
         }
@@ -51,7 +71,7 @@ client.once("ready", async () => {
     },
     {
       name: "whitelist_remove",
-      description: "Entfernt einen User aus der Whitelist (Whitelist Master)",
+      description: "Entfernt einen User aus der Whitelist (Admin)",
       options: [
         {
           name: "user",
@@ -62,12 +82,30 @@ client.once("ready", async () => {
       ]
     },
     {
-      name: "whitelist_list",
-      description: "Zeigt alle Whitelist-Einträge (Whitelist Master)"
+      name: "whitelist_edit",
+      description: "Erstellt oder ändert einen Eintrag (Admin)",
+      options: [
+        {
+          name: "user",
+          description: "Discord-User",
+          type: 6,
+          required: true
+        },
+        {
+          name: "name",
+          description: "Minecraft-Name",
+          type: 3,
+          required: true
+        }
+      ]
     },
     {
-      name: "whitelist_reset",
-      description: "Leert die komplette Whitelist (Whitelist Master)"
+      name: "whitelist_list",
+      description: "Zeigt die komplette Whitelist (Admin)"
+    },
+    {
+      name: "whitelist_restore",
+      description: "Stellt Whitelist aus Backup wieder her (Admin)"
     }
   ];
 
@@ -84,9 +122,7 @@ client.once("ready", async () => {
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
-  const member = interaction.member;
-
-  // ===== /whitelist (EVERYONE) =====
+  // ===== /whitelist (everyone) =====
   if (interaction.commandName === "whitelist") {
     await interaction.deferReply({ ephemeral: true });
 
@@ -114,13 +150,16 @@ client.on("interactionCreate", async interaction => {
       mcName.trim()
     );
 
-    return interaction.editReply(
+    await interaction.editReply(
       `✅ **${mcName}** wurde zur Whitelist hinzugefügt!`
     );
+
+    await postBackup();
+    return;
   }
 
-  // ===== AB HIER: NUR WHITELIST MASTER =====
-  if (!hasWhitelistMasterRole(member)) {
+  // ===== Ab hier: Admin =====
+  if (!isWhitelistMaster(interaction.member)) {
     return interaction.reply({
       content: "❌ Dafür brauchst du die Rolle **Whitelist Master**.",
       ephemeral: true
@@ -132,19 +171,36 @@ client.on("interactionCreate", async interaction => {
     await interaction.deferReply({ ephemeral: true });
 
     const user = interaction.options.getUser("user");
+    await db.run("DELETE FROM whitelist WHERE discord_id = ?", user.id);
 
-    const result = await db.run(
-      "DELETE FROM whitelist WHERE discord_id = ?",
-      user.id
+    await interaction.editReply(
+      `🗑️ Eintrag von **${user.tag}** entfernt.`
     );
 
-    if (result.changes === 0) {
-      return interaction.editReply("ℹ️ User war nicht auf der Whitelist.");
-    }
+    await postBackup();
+    return;
+  }
 
-    return interaction.editReply(
-      `🗑️ Whitelist-Eintrag von **${user.tag}** gelöscht.`
+  // ===== /whitelist_edit =====
+  if (interaction.commandName === "whitelist_edit") {
+    await interaction.deferReply({ ephemeral: true });
+
+    const user = interaction.options.getUser("user");
+    const mcName = interaction.options.getString("name");
+
+    await db.run(
+      "INSERT INTO whitelist (discord_id, minecraft_name) VALUES (?, ?)\n" +
+      "ON CONFLICT(discord_id) DO UPDATE SET minecraft_name=excluded.minecraft_name",
+      user.id,
+      mcName.trim()
     );
+
+    await interaction.editReply(
+      `✏️ **${user.tag}** wurde auf **${mcName}** gesetzt.`
+    );
+
+    await postBackup();
+    return;
   }
 
   // ===== /whitelist_list =====
@@ -152,25 +208,52 @@ client.on("interactionCreate", async interaction => {
     await interaction.deferReply({ ephemeral: true });
 
     const rows = await db.all("SELECT * FROM whitelist");
-
     if (rows.length === 0) {
       return interaction.editReply("📭 Whitelist ist leer.");
     }
 
     const list = rows
-      .map(r => `• <@${r.discord_id}> → **${r.minecraft_name}**`)
+      .map(r => `<@${r.discord_id}> → **${r.minecraft_name}**`)
       .join("\n");
 
-    return interaction.editReply(`📋 **Whitelist:**\n${list}`);
+    return interaction.editReply("📋 **Whitelist:**\n" + list);
   }
 
-  // ===== /whitelist_reset =====
-  if (interaction.commandName === "whitelist_reset") {
+  // ===== /whitelist_restore =====
+  if (interaction.commandName === "whitelist_restore") {
     await interaction.deferReply({ ephemeral: true });
 
+    await interaction.editReply(
+      "📋 **Füge jetzt das Backup ein (ID|Name pro Zeile).**"
+    );
+
+    const filter = m => m.author.id === interaction.user.id;
+    const collected = await interaction.channel.awaitMessages({
+      filter,
+      max: 1,
+      time: 120000
+    });
+
+    if (collected.size === 0) {
+      return interaction.editReply("⏱️ Zeit abgelaufen.");
+    }
+
+    const lines = collected.first().content.split("\n");
     await db.run("DELETE FROM whitelist");
 
-    return interaction.editReply("🧹 Whitelist wurde komplett geleert.");
+    for (const line of lines) {
+      const [id, name] = line.split("|");
+      if (!id || !name) continue;
+
+      await db.run(
+        "INSERT INTO whitelist (discord_id, minecraft_name) VALUES (?, ?)",
+        id.trim(),
+        name.trim()
+      );
+    }
+
+    await interaction.editReply("✅ Whitelist wiederhergestellt.");
+    await postBackup();
   }
 });
 
