@@ -3,6 +3,7 @@ import express from "express";
 import { Client, GatewayIntentBits, REST, Routes } from "discord.js";
 import sqlite3 from "sqlite3";
 import { open } from "sqlite";
+import { Rcon } from "rcon-client";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -30,6 +31,18 @@ const client = new Client({
 // ===== Rollencheck =====
 function isWhitelistMaster(member) {
   return member.roles.cache.some(r => r.name === "Whitelist Master");
+}
+
+// ===== RCON Helper =====
+async function rconCommand(command) {
+  const rcon = await Rcon.connect({
+    host: process.env.RCON_HOST,
+    port: Number(process.env.RCON_PORT),
+    password: process.env.RCON_PASSWORD
+  });
+
+  await rcon.send(command);
+  await rcon.end();
 }
 
 // ===== Backup posten =====
@@ -107,16 +120,16 @@ client.once("ready", async () => {
       name: "whitelist_restore",
       description: "Stellt die Whitelist aus einem Backup wieder her",
       options: [
-    {
-      name: "data",
-      description: "Backup (ID|Name getrennt durch Leerzeichen oder Zeilen)",
-      type: 3,
-      required: true
+        {
+          name: "data",
+          description: "Backup (ID|Name getrennt durch Leerzeichen oder Zeilen)",
+          type: 3,
+          required: true
         }
       ]
     }
   ];
-  
+
   const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
   await rest.put(
     Routes.applicationCommands(client.user.id),
@@ -157,6 +170,13 @@ client.on("interactionCreate", async interaction => {
       discordId,
       mcName.trim()
     );
+
+    // 🔗 RCON
+    try {
+      await rconCommand(`whitelist add ${mcName.trim()}`);
+    } catch (err) {
+      console.error("RCON Fehler:", err);
+    }
 
     await interaction.editReply(
       `✅ **${mcName}** wurde zur Whitelist hinzugefügt!`
@@ -203,6 +223,13 @@ client.on("interactionCreate", async interaction => {
       mcName.trim()
     );
 
+    // 🔗 RCON
+    try {
+      await rconCommand(`whitelist add ${mcName.trim()}`);
+    } catch (err) {
+      console.error("RCON Fehler:", err);
+    }
+
     await interaction.editReply(
       `✏️ **${user.tag}** wurde auf **${mcName}** gesetzt.`
     );
@@ -228,46 +255,43 @@ client.on("interactionCreate", async interaction => {
   }
 
   // ===== /whitelist_restore =====
-if (interaction.commandName === "whitelist_restore") {
-  if (!isWhitelistMaster(interaction.member)) {
-    return interaction.reply({
-      content: "❌ Nur Whitelist Master.",
-      ephemeral: true
-    });
-  }
+  if (interaction.commandName === "whitelist_restore") {
+    await interaction.deferReply({ ephemeral: true });
 
-  await interaction.deferReply({ ephemeral: true });
+    const raw = interaction.options.getString("data").trim();
+    const entries = raw.split(/\s+/);
 
-  const raw = interaction.options.getString("data").trim();
+    await db.run("DELETE FROM whitelist");
 
-  // akzeptiert Leerzeichen, Zeilenumbrüche, Tabs
-  const entries = raw.split(/\s+/);
+    let count = 0;
 
-  await db.run("DELETE FROM whitelist");
+    for (const entry of entries) {
+      const [id, name] = entry.split("|");
+      if (!id || !name) continue;
 
-  let count = 0;
+      await db.run(
+        "INSERT INTO whitelist (discord_id, minecraft_name) VALUES (?, ?)",
+        id.trim(),
+        name.trim()
+      );
 
-  for (const entry of entries) {
-    const [id, name] = entry.split("|");
-    if (!id || !name) continue;
+      // 🔗 RCON
+      try {
+        await rconCommand(`whitelist add ${name.trim()}`);
+      } catch (err) {
+        console.error("RCON Fehler beim Restore:", err);
+      }
 
-    await db.run(
-      "INSERT INTO whitelist (discord_id, minecraft_name) VALUES (?, ?)",
-      id.trim(),
-      name.trim()
+      count++;
+    }
+
+    await interaction.editReply(
+      `✅ Whitelist wiederhergestellt (${count} Einträge).`
     );
 
-    count++;
+    await postBackup();
+    return;
   }
-
-  await interaction.editReply(
-    `✅ Whitelist wiederhergestellt (${count} Einträge).`
-  );
-
-  await postBackup();
-  return;
-}
-
 });
 
 // ===== Login =====
