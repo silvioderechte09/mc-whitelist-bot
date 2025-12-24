@@ -105,10 +105,18 @@ client.once("ready", async () => {
     },
     {
       name: "whitelist_restore",
-      description: "Stellt Whitelist aus Backup wieder her (Admin)"
+      description: "Stellt die Whitelist aus einem Backup wieder her",
+      options: [
+    {
+      name: "data",
+      description: "Backup (ID|Name getrennt durch Leerzeichen oder Zeilen)",
+      type: 3,
+      required: true
+        }
+      ]
     }
   ];
-
+  
   const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
   await rest.put(
     Routes.applicationCommands(client.user.id),
@@ -220,41 +228,46 @@ client.on("interactionCreate", async interaction => {
   }
 
   // ===== /whitelist_restore =====
-  if (interaction.commandName === "whitelist_restore") {
-    await interaction.deferReply({ ephemeral: true });
+if (interaction.commandName === "whitelist_restore") {
+  if (!isWhitelistMaster(interaction.member)) {
+    return interaction.reply({
+      content: "❌ Nur Whitelist Master.",
+      ephemeral: true
+    });
+  }
 
-    await interaction.editReply(
-      "📋 **Füge jetzt das Backup ein (ID|Name pro Zeile).**"
+  await interaction.deferReply({ ephemeral: true });
+
+  const raw = interaction.options.getString("data").trim();
+
+  // akzeptiert Leerzeichen, Zeilenumbrüche, Tabs
+  const entries = raw.split(/\s+/);
+
+  await db.run("DELETE FROM whitelist");
+
+  let count = 0;
+
+  for (const entry of entries) {
+    const [id, name] = entry.split("|");
+    if (!id || !name) continue;
+
+    await db.run(
+      "INSERT INTO whitelist (discord_id, minecraft_name) VALUES (?, ?)",
+      id.trim(),
+      name.trim()
     );
 
-    const filter = m => m.author.id === interaction.user.id;
-    const collected = await interaction.channel.awaitMessages({
-      filter,
-      max: 1,
-      time: 120000
-    });
-
-    if (collected.size === 0) {
-      return interaction.editReply("⏱️ Zeit abgelaufen.");
-    }
-
-    const lines = collected.first().content.split("\n");
-    await db.run("DELETE FROM whitelist");
-
-    for (const line of lines) {
-      const [id, name] = line.split("|");
-      if (!id || !name) continue;
-
-      await db.run(
-        "INSERT INTO whitelist (discord_id, minecraft_name) VALUES (?, ?)",
-        id.trim(),
-        name.trim()
-      );
-    }
-
-    await interaction.editReply("✅ Whitelist wiederhergestellt.");
-    await postBackup();
+    count++;
   }
+
+  await interaction.editReply(
+    `✅ Whitelist wiederhergestellt (${count} Einträge).`
+  );
+
+  await postBackup();
+  return;
+}
+
 });
 
 // ===== Login =====
