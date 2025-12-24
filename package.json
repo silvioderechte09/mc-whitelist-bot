@@ -1,15 +1,15 @@
 {
   "name": "mc-whitelist-bot",
   "version": "1.0.0",
+  "description": "Discord Minecraft Whitelist Bot",
   "type": "module",
+  "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
     "discord.js": "^14.14.1",
-    "express": "^4.19.2",
     "sqlite": "^5.1.1",
     "sqlite3": "^5.1.7"
   }
-
 }
