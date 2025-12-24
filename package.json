@@ -1,0 +1,14 @@
+{
+  "name": "mc-whitelist-bot",
+  "version": "1.0.0",
+  "description": "Discord Minecraft Whitelist Bot",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "discord.js": "^14.14.1",
+    "rcon-client": "^4.2.3"
+  }
+}
