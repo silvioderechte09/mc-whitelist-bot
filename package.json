@@ -9,6 +9,7 @@
     "discord.js": "^14.14.1",
     "express": "^4.19.2",
     "sqlite": "^5.1.1",
-    "sqlite3": "^5.1.7"
+    "sqlite3": "^5.1.7",
+    "rcon-client": "^4.2.3"
   }
 }
