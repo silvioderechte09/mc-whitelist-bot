@@ -1,4 +1,5 @@
 import fs from "fs";
+import express from "express";
 import { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder,
          ModalBuilder, TextInputBuilder, TextInputStyle,
          ActionRowBuilder, InteractionType } from "discord.js";
@@ -99,5 +100,18 @@ client.on("interactionCreate", async (interaction) => {
     });
   }
 });
+
+// Fake Webserver für Render Free Plan
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get("/", (req, res) => {
+  res.send("Bot läuft.");
+});
+
+app.listen(PORT, () => {
+  console.log(`🌐 Fake Webserver läuft auf Port ${PORT}`);
+});
+
 
 client.login(TOKEN);
