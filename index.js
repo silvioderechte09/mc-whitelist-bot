@@ -33,20 +33,38 @@ function isWhitelistMaster(member) {
   return member.roles.cache.some(r => r.name === "Whitelist Master");
 }
 
-// ===== RCON (STABIL!) =====
-async function runRcon(commands = []) {
+// ===== RCON Helper (UNVERÄNDERT) =====
+async function rconCommand(command) {
   const rcon = await Rcon.connect({
     host: process.env.RCON_HOST,
     port: Number(process.env.RCON_PORT),
     password: process.env.RCON_PASSWORD
   });
 
-  for (const cmd of commands) {
-    const res = await rcon.send(cmd);
-    console.log("RCON:", cmd, "=>", res);
+  await rcon.send(command);
+  await rcon.end();
+}
+
+// ===== Backup posten =====
+async function postBackup() {
+  const channel = client.channels.cache.find(
+    c => c.name === "whitelist_admin"
+  );
+  if (!channel) return;
+
+  const rows = await db.all("SELECT * FROM whitelist");
+  if (rows.length === 0) {
+    await channel.send("📭 **Whitelist ist leer.**");
+    return;
   }
 
-  await rcon.end();
+  const backup = rows
+    .map(r => `${r.discord_id}|${r.minecraft_name}`)
+    .join("\n");
+
+  await channel.send(
+    "📦 **Whitelist Backup**\n```text\n" + backup + "\n```"
+  );
 }
 
 // ===== Ready =====
@@ -65,6 +83,52 @@ client.once("ready", async () => {
           required: true
         }
       ]
+    },
+    {
+      name: "whitelist_remove",
+      description: "Entfernt einen User aus der Whitelist (Admin)",
+      options: [
+        {
+          name: "user",
+          description: "Discord-User",
+          type: 6,
+          required: true
+        }
+      ]
+    },
+    {
+      name: "whitelist_edit",
+      description: "Erstellt oder ändert einen Eintrag (Admin)",
+      options: [
+        {
+          name: "user",
+          description: "Discord-User",
+          type: 6,
+          required: true
+        },
+        {
+          name: "name",
+          description: "Minecraft-Name",
+          type: 3,
+          required: true
+        }
+      ]
+    },
+    {
+      name: "whitelist_list",
+      description: "Zeigt die komplette Whitelist (Admin)"
+    },
+    {
+      name: "whitelist_restore",
+      description: "Stellt die Whitelist aus einem Backup wieder her",
+      options: [
+        {
+          name: "data",
+          description: "ID|Name getrennt durch Leerzeichen oder Zeilen",
+          type: 3,
+          required: true
+        }
+      ]
     }
   ];
 
@@ -74,50 +138,136 @@ client.once("ready", async () => {
     { body: commands }
   );
 
-  console.log("✅ Slash Command registriert");
+  console.log("✅ Slash Commands registriert");
 });
 
-// ===== Interaction =====
+// ===== Interactions =====
 client.on("interactionCreate", async interaction => {
   if (!interaction.isChatInputCommand()) return;
 
+  // ===== /whitelist (everyone) =====
   if (interaction.commandName === "whitelist") {
     await interaction.deferReply({ ephemeral: true });
 
-    const mcName = interaction.options.getString("name").trim();
+    const mcName = interaction.options.getString("name");
     const discordId = interaction.user.id;
 
-    if (mcName.length < 3) {
+    if (!mcName || mcName.trim().length < 3) {
       return interaction.editReply("❌ Ungültiger Minecraft-Name.");
     }
 
-    const existing = await db.get(
-      "SELECT * FROM whitelist WHERE discord_id = ?",
-      discordId
-    );
-
-    if (existing) {
-      return interaction.editReply(
-        `❌ Du bist bereits als **${existing.minecraft_name}** eingetragen.`
-      );
-    }
-
-    // DB
     await db.run(
-      "INSERT INTO whitelist (discord_id, minecraft_name) VALUES (?, ?)",
+      "INSERT INTO whitelist (discord_id, minecraft_name) VALUES (?, ?) " +
+      "ON CONFLICT(discord_id) DO NOTHING",
       discordId,
-      mcName
+      mcName.trim()
     );
 
-    // 🔥 RCON – KORREKT & STABIL
-    await runRcon([
-      `whitelist add ${mcName}`,
-      `whitelist reload`
-    ]);
+    // RCON whitelist add
+    await rconCommand(`whitelist add ${mcName.trim()}`);
 
     await interaction.editReply(
-      `✅ **${mcName}** wurde erfolgreich zur Whitelist hinzugefügt!`
+      `✅ **${mcName}** wurde zur Whitelist hinzugefügt!`
     );
+
+    await postBackup();
+    return;
+  }
+
+  // ===== Admin Schutz =====
+  if (!isWhitelistMaster(interaction.member)) {
+    return interaction.reply({
+      content: "❌ Dafür brauchst du die Rolle **Whitelist Master**.",
+      ephemeral: true
+    });
+  }
+
+  // ===== /whitelist_remove =====
+  if (interaction.commandName === "whitelist_remove") {
+    await interaction.deferReply({ ephemeral: true });
+
+    const user = interaction.options.getUser("user");
+    const row = await db.get(
+      "SELECT minecraft_name FROM whitelist WHERE discord_id = ?",
+      user.id
+    );
+
+    if (row) {
+      await rconCommand(`whitelist remove ${row.minecraft_name}`);
+    }
+
+    await db.run("DELETE FROM whitelist WHERE discord_id = ?", user.id);
+
+    await interaction.editReply(`🗑️ **${user.tag}** entfernt.`);
+    await postBackup();
+    return;
+  }
+
+  // ===== /whitelist_edit =====
+  if (interaction.commandName === "whitelist_edit") {
+    await interaction.deferReply({ ephemeral: true });
+
+    const user = interaction.options.getUser("user");
+    const mcName = interaction.options.getString("name");
+
+    await db.run(
+      "INSERT INTO whitelist (discord_id, minecraft_name) VALUES (?, ?) " +
+      "ON CONFLICT(discord_id) DO UPDATE SET minecraft_name=excluded.minecraft_name",
+      user.id,
+      mcName.trim()
+    );
+
+    await rconCommand(`whitelist add ${mcName.trim()}`);
+
+    await interaction.editReply(
+      `✏️ **${user.tag}** → **${mcName}**`
+    );
+
+    await postBackup();
+    return;
+  }
+
+  // ===== /whitelist_list =====
+  if (interaction.commandName === "whitelist_list") {
+    await interaction.deferReply({ ephemeral: true });
+
+    const rows = await db.all("SELECT * FROM whitelist");
+    if (rows.length === 0) {
+      return interaction.editReply("📭 Whitelist ist leer.");
+    }
+
+    const list = rows
+      .map(r => `<@${r.discord_id}> → **${r.minecraft_name}**`)
+      .join("\n");
+
+    return interaction.editReply("📋 **Whitelist:**\n" + list);
+  }
+
+  // ===== /whitelist_restore =====
+  if (interaction.commandName === "whitelist_restore") {
+    await interaction.deferReply({ ephemeral: true });
+
+    const raw = interaction.options.getString("data");
+    const entries = raw.split(/\s+/);
+
+    await db.run("DELETE FROM whitelist");
+
+    for (const entry of entries) {
+      const [id, name] = entry.split("|");
+      if (!id || !name) continue;
+
+      await db.run(
+        "INSERT INTO whitelist (discord_id, minecraft_name) VALUES (?, ?)",
+        id.trim(),
+        name.trim()
+      );
+
+      await rconCommand(`whitelist add ${name.trim()}`);
+    }
+
+    await interaction.editReply("✅ Whitelist wiederhergestellt.");
+    await postBackup();
+    return;
   }
 });
 
