@@ -33,7 +33,7 @@ function isWhitelistMaster(member) {
   return member.roles.cache.some(r => r.name === "Whitelist Master");
 }
 
-// ===== RCON Helper =====
+// ===== RCON Helper (Fabric-safe) =====
 async function rconCommand(command) {
   const rcon = await Rcon.connect({
     host: process.env.RCON_HOST,
@@ -122,7 +122,7 @@ client.once("ready", async () => {
       options: [
         {
           name: "data",
-          description: "Backup (ID|Name getrennt durch Leerzeichen oder Zeilen)",
+          description: "Backup (ID|Name – getrennt durch Leerzeichen oder Zeilen)",
           type: 3,
           required: true
         }
@@ -147,10 +147,10 @@ client.on("interactionCreate", async interaction => {
   if (interaction.commandName === "whitelist") {
     await interaction.deferReply({ ephemeral: true });
 
-    const mcName = interaction.options.getString("name");
+    const mcName = interaction.options.getString("name").trim();
     const discordId = interaction.user.id;
 
-    if (!mcName || mcName.trim().length < 3) {
+    if (mcName.length < 3) {
       return interaction.editReply("❌ Ungültiger Minecraft-Name.");
     }
 
@@ -168,12 +168,13 @@ client.on("interactionCreate", async interaction => {
     await db.run(
       "INSERT INTO whitelist (discord_id, minecraft_name) VALUES (?, ?)",
       discordId,
-      mcName.trim()
+      mcName
     );
 
-    // 🔗 RCON
+    // 🔗 RCON (FABRIC FIX)
     try {
-      await rconCommand(`whitelist add ${mcName.trim()}`);
+      await rconCommand(`minecraft:whitelist add ${mcName}`);
+      await rconCommand(`minecraft:whitelist reload`);
     } catch (err) {
       console.error("RCON Fehler:", err);
     }
@@ -214,18 +215,19 @@ client.on("interactionCreate", async interaction => {
     await interaction.deferReply({ ephemeral: true });
 
     const user = interaction.options.getUser("user");
-    const mcName = interaction.options.getString("name");
+    const mcName = interaction.options.getString("name").trim();
 
     await db.run(
       "INSERT INTO whitelist (discord_id, minecraft_name) VALUES (?, ?)\n" +
       "ON CONFLICT(discord_id) DO UPDATE SET minecraft_name=excluded.minecraft_name",
       user.id,
-      mcName.trim()
+      mcName
     );
 
     // 🔗 RCON
     try {
-      await rconCommand(`whitelist add ${mcName.trim()}`);
+      await rconCommand(`minecraft:whitelist add ${mcName}`);
+      await rconCommand(`minecraft:whitelist reload`);
     } catch (err) {
       console.error("RCON Fehler:", err);
     }
@@ -275,15 +277,18 @@ client.on("interactionCreate", async interaction => {
         name.trim()
       );
 
-      // 🔗 RCON
       try {
-        await rconCommand(`whitelist add ${name.trim()}`);
+        await rconCommand(`minecraft:whitelist add ${name.trim()}`);
       } catch (err) {
         console.error("RCON Fehler beim Restore:", err);
       }
 
       count++;
     }
+
+    try {
+      await rconCommand(`minecraft:whitelist reload`);
+    } catch {}
 
     await interaction.editReply(
       `✅ Whitelist wiederhergestellt (${count} Einträge).`
